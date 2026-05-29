@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: rag_analytics_db
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-rag_analytics}
+      POSTGRES_USER: ${DATABASE_USER:-rag_user}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-rag_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-rag_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag_network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rag_analytics_backend
+    environment:
+      DATABASE_URL: postgresql://${DATABASE_USER:-rag_user}:${DATABASE_PASSWORD:-rag_password}@db:5432/${DATABASE_NAME:-rag_analytics}
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen:7b}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEBUG: ${DEBUG:-false}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - uploads_data:/tmp/uploads
+      - vector_db:/tmp/faiss_db
+      - logs_data:/tmp/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - rag_network
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8000
+    container_name: rag_analytics_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_ENVIRONMENT: development
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - backend
+    networks:
+      - rag_network
+
+  # Redis (Optional - for caching)
+  redis:
+    image: redis:7-alpine
+    container_name: rag_analytics_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag_network
+    profiles:
+      - optional
+
+volumes:
+  postgres_data:
+  uploads_data:
+  vector_db:
+  logs_data:
+  redis_data:
+
+networks:
+  rag_network:
+    driver: bridge
